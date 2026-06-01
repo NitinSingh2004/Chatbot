@@ -1,0 +1,13 @@
+streamlit
+
+llama-index
+llama-index-embeddings-huggingface
+llama-index-llms-groq
+
+sentence-transformers
+torch
+
+pypdf
+python-docx
+
+python-dotenv
