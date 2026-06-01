@@ -3,7 +3,6 @@ import shutil
 import streamlit as st
 from dotenv import load_dotenv
 
-from sentence_transformers import SentenceTransformer
 from llama_index.core import (
     Settings,
     VectorStoreIndex,
@@ -15,60 +14,61 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.groq import Groq
 
 # =====================================================
-# LOAD ENVIRONMENT VARIABLES
+# ENVIRONMENT CONFIGURATION
 # =====================================================
 load_dotenv()
+
+# Prevent Hugging Face from creating symlinks or cluttering your local working directory
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 # =====================================================
 # PAGE CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="Document Chatbot",
+    page_title="Production Chatbot",
     layout="wide"
 )
 
 # =====================================================
-# EMBEDDING MODEL (LOAD ONLY ONCE)
+# EMBEDDING MODEL (Zero Local Folder Storage)
 # =====================================================
-
-
 @st.cache_resource
 def load_embedding_model():
-    # Download/load model only once
-    SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    # This automatically uses the global system cache, completely bypassing your local folder
     return HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
 
 Settings.embed_model = load_embedding_model()
 
 # =====================================================
-# LLM CONFIG
+# LLM CONFIG (Cloud Execution via Groq)
 # =====================================================
+api_key = os.getenv("GROQ_API_KEY")
+if not api_key:
+    st.error("Missing GROQ_API_KEY environment variable. Please check your .env file or Render dashboard configuration.")
+
 Settings.llm = Groq(
     model="llama-3.3-70b-versatile",
-    api_key=os.getenv("GROQ_API_KEY")
+    api_key=api_key
 )
 
 # =====================================================
-# STORAGE CONFIG
+# DATA MANAGEMENT CONFIG
 # =====================================================
-# Render Persistent Disk
-BASE_DIR = "/var/data"
-
-UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
-INDEX_DIR = os.path.join(BASE_DIR, "indexes")
+LOCAL_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOADS_DIR = os.path.join(LOCAL_PROJECT_DIR, "uploads")
+INDEX_DIR = os.path.join(LOCAL_PROJECT_DIR, "indexes")
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(INDEX_DIR, exist_ok=True)
 
 # =====================================================
-# UI
+# UI HEADER
 # =====================================================
-st.title("📚 Document Chatbot")
-st.caption("LlamaIndex + HuggingFace Embeddings + Groq")
+st.title("📚 Cloud-Native Document Chatbot")
+st.caption("LlamaIndex + Isolated Embeddings + Groq Integration")
 
 # =====================================================
-# BUSINESS ID & INITIALIZATION
+# BUSINESS WORKFLOW INITIALIZATION
 # =====================================================
 business_id = st.text_input("Business ID", value="demo_business")
 
@@ -78,7 +78,6 @@ index_path = os.path.join(INDEX_DIR, business_id)
 os.makedirs(upload_path, exist_ok=True)
 os.makedirs(index_path, exist_ok=True)
 
-# Clear chat engine memory if the business ID changes
 if "current_business" not in st.session_state:
     st.session_state.current_business = business_id
 
@@ -89,7 +88,7 @@ if st.session_state.current_business != business_id:
     st.session_state.messages = []
 
 # =====================================================
-# FILE UPLOAD
+# FILE MANAGEMENT SYSTEM
 # =====================================================
 st.subheader("Upload Documents")
 
@@ -107,34 +106,32 @@ if uploaded_files:
     st.success(f"{len(uploaded_files)} file(s) uploaded successfully.")
 
 # =====================================================
-# CREATE EMBEDDINGS
+# RAG INDEX GENERATION
 # =====================================================
 if st.button("Create Embeddings"):
     try:
-        with st.spinner("Reading documents..."):
+        with st.spinner("Processing files..."):
             documents = SimpleDirectoryReader(upload_path).load_data()
 
-        with st.spinner("Creating vector index..."):
+        with st.spinner("Indexing vector database..."):
             index = VectorStoreIndex.from_documents(documents)
             index.storage_context.persist(persist_dir=index_path)
 
-        # Instantiate and cache the chat engine immediately after creation
         st.session_state.chat_engine = index.as_chat_engine(
             chat_mode="context",
             verbose=False
         )
-        st.success("Embeddings created successfully.")
+        st.success("Vector database created successfully.")
     except Exception as e:
         st.error(str(e))
 
 # =====================================================
-# LAZY LOAD INDEX INTO SESSION STATE
+# RE-LOAD INDEX PIPELINE
 # =====================================================
 if "chat_engine" not in st.session_state:
     try:
         if os.path.exists(index_path) and len(os.listdir(index_path)) > 0:
-            storage_context = StorageContext.from_defaults(
-                persist_dir=index_path)
+            storage_context = StorageContext.from_defaults(persist_dir=index_path)
             index = load_index_from_storage(storage_context)
             st.session_state.chat_engine = index.as_chat_engine(
                 chat_mode="context",
@@ -144,21 +141,18 @@ if "chat_engine" not in st.session_state:
         st.warning(f"Could not load index: {e}")
 
 # =====================================================
-# CHAT HISTORY
+# CONVERSATIONAL INTERFACE
 # =====================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 st.divider()
-st.subheader("💬 Chat With Documents")
+st.subheader("💬 Interactive Query Hub")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# =====================================================
-# CHAT INPUT
-# =====================================================
 prompt = st.chat_input("Ask something about your documents...")
 
 if prompt:
@@ -166,13 +160,11 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Check if the chat engine is available in session state
     if "chat_engine" not in st.session_state:
-        answer = "Please upload documents and create embeddings first."
+        answer = "Please upload documents and process them first."
     else:
         try:
-            with st.spinner("Thinking..."):
-                # Call chat on the persistent state instance to preserve history
+            with st.spinner("Streaming response..."):
                 response = st.session_state.chat_engine.chat(prompt)
                 answer = str(response)
         except Exception as e:
@@ -183,7 +175,7 @@ if prompt:
         st.markdown(answer)
 
 # =====================================================
-# DELETE DATA
+# DATA WIPE MECHANISM
 # =====================================================
 st.divider()
 
@@ -197,12 +189,11 @@ if st.button("Delete Business Data"):
         os.makedirs(upload_path, exist_ok=True)
         os.makedirs(index_path, exist_ok=True)
 
-        # Wipe state tracking for this business
         st.session_state.messages = []
         if "chat_engine" in st.session_state:
             del st.session_state.chat_engine
 
-        st.success("Business data deleted successfully.")
-        st.rerun()  # Force page refresh to update UI state immediately
+        st.success("Business data wiped clean.")
+        st.rerun()
     except Exception as e:
         st.error(str(e))
